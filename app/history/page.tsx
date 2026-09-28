@@ -25,13 +25,13 @@ type HistoryItem = {
   prompt: string;
   model: string;
   mimeType: string;
-  imageBase64: string;
   createdAt: string;
   width?: number;
   height?: number;
   seed?: number;
   style?: string;
   imageUrl?: string;
+  public?: boolean;
 };
 
 const getColumnCount = () => {
@@ -62,7 +62,6 @@ export default function HistoryPage() {
   const [variationsModal, setVariationsModal] = useState<{ item: HistoryItem; variations: Variation[]; loading: boolean } | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
-  const allItemsRef = useRef<HistoryItem[]>([]);
   const pageRef = useRef(1);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -92,7 +91,9 @@ export default function HistoryPage() {
     else setLoading(true);
     setError("");
     try {
-      const res = await fetch("/api/history", { cache: "no-store" });
+      // Paging happens server-side: the list carries no base64, the grid loads
+      // bytes per-image from /api/history/:id/image.
+      const res = await fetch(`/api/history?page=${page}&limit=${PAGE_SIZE}`, { cache: "no-store" });
       if (!res.ok) {
         if (res.status === 401) {
           setError("Please login to view your history.");
@@ -103,20 +104,16 @@ export default function HistoryPage() {
       }
 
       const json = await res.json();
-      const allList: HistoryItem[] = (Array.isArray(json?.items) ? json.items : []).filter(
+      const pageItems: HistoryItem[] = (Array.isArray(json?.items) ? json.items : []).filter(
         (it: HistoryItem) => it.mimeType !== "text/plain",
       );
-      allItemsRef.current = allList;
-
-      const start = (page - 1) * PAGE_SIZE;
-      const pageItems = allList.slice(start, start + PAGE_SIZE);
 
       if (append) {
         setItems((prev) => [...prev, ...pageItems]);
       } else {
         setItems(pageItems);
       }
-      setHasMore(start + PAGE_SIZE < allList.length);
+      setHasMore(json?.hasMore === true);
       pageRef.current = page + 1;
     } catch {
       setError("Network error while loading history.");
@@ -172,7 +169,6 @@ export default function HistoryPage() {
     }
 
     setItems((prev) => prev.filter((x) => x.id !== id));
-    allItemsRef.current = allItemsRef.current.filter((x) => x.id !== id);
     toast.success("Image deleted");
   };
 

@@ -44,5 +44,6 @@ export async function POST(req: Request) {
     streamRequested: body?.stream === true,
     forceText: body?.forceText === true,
     textModel,
+    isPublic: body?.isPublic === true,
   });
 }

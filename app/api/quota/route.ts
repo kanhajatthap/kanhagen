@@ -21,7 +21,7 @@ export async function GET() {
     const overview = await getQuotaOverview(db, session.userId);
     return NextResponse.json(overview, { status: 200 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return NextResponse.json({ error: "Failed to load quota.", details: message }, { status: 500 });
+    console.error("Quota API error:", error);
+    return NextResponse.json({ error: "Failed to load quota." }, { status: 500 });
   }
 }

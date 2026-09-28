@@ -16,6 +16,8 @@ export interface PromptInputOptions {
   image?: File;
   batchCount?: number;
   textModel?: "auto" | "gemini" | "pollinations";
+  /** Opt-in: publish generated images to the public /explore gallery. */
+  isPublic?: boolean;
 }
 
 export interface PromptInputHandle {
@@ -75,6 +77,8 @@ export function PromptInput({ onSend, onEnhance, onOCRResult, disabled, ref }: P
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
   const [batchMode, setBatchMode] = useState(false);
   const [batchCount, setBatchCount] = useState(4);
+  // Images are private by default; publishing is an explicit opt-in.
+  const [isPublic, setIsPublic] = useState(false);
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
   const [textModel, setTextModel] = useState<"auto" | "gemini" | "pollinations">(() => {
     if (typeof window === "undefined") return "auto";
@@ -287,6 +291,7 @@ export function PromptInput({ onSend, onEnhance, onOCRResult, disabled, ref }: P
       image: selectedImage || undefined,
       batchCount: batchMode ? batchCount : undefined,
       textModel,
+      isPublic,
     });
     setSelectedImage(null);
   };
@@ -431,6 +436,30 @@ export function PromptInput({ onSend, onEnhance, onOCRResult, disabled, ref }: P
                 ))}
               </select>
             )}
+          </div>
+
+          {/* Public gallery toggle (images are private unless enabled) */}
+          <div className="flex items-center gap-2 rounded-lg border border-zinc-300 px-3 py-1.5 dark:border-zinc-700">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={isPublic}
+              aria-label="Publish images to the public gallery"
+              onClick={() => setIsPublic((v) => !v)}
+              className={[
+                "relative h-4 w-7 shrink-0 rounded-full transition-colors duration-200",
+                isPublic ? "bg-indigo-600" : "bg-zinc-300 dark:bg-zinc-600",
+              ].join(" ")}
+              title={isPublic ? "Images will be visible in Explore" : "Images stay private to you"}
+            >
+              <span
+                className={[
+                  "absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform duration-200",
+                  isPublic ? "translate-x-3" : "translate-x-0",
+                ].join(" ")}
+              />
+            </button>
+            <span className="text-sm text-zinc-600 dark:text-zinc-400">Public</span>
           </div>
 
           {/* Chat reply model */}

@@ -5,6 +5,8 @@ import { NextResponse } from "next/server";
 import { getDb } from "../../../../lib/mongodb";
 import { createSessionToken, SESSION_COOKIE_NAME } from "../../../../lib/session";
 import { checkRateLimit } from "../../../../lib/rateLimit";
+import { getClientIp } from "../../../../lib/request";
+import { CAPTCHA_FIELD, verifyCaptcha } from "../../../../lib/turnstile";
 
 export const runtime = "nodejs";
 
@@ -24,11 +26,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Password must be at least 6 characters." }, { status: 400 });
   }
 
+  // Bot gate. Checked after the free local validation (so malformed junk costs
+  // no upstream call) but before the bcrypt hash and the database write, which
+  // are the expensive parts worth protecting.
+  const ip = getClientIp(req);
+  const captcha = await verifyCaptcha(body?.[CAPTCHA_FIELD], { remoteIp: ip, expectedAction: "signup" });
+  if (!captcha.ok) {
+    console.warn(`[signup] captcha rejected (${captcha.reason}) from ${ip}`);
+    return NextResponse.json({ error: "Verification failed. Please try again." }, { status: 403 });
+  }
+
   try {
     const db = await getDb();
 
-    // One signup per IP per window (via X-Forwarded-For) to stop abuse.
-    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    // One signup per IP per window to stop abuse. The IP comes from the
+    // right-most X-Forwarded-For hop so a client can't rotate a fake header
+    // to get a fresh bucket on every attempt.
     const signupLimit = checkRateLimit(`signup:${ip}`);
     if (!signupLimit.allowed) {
       return NextResponse.json(
@@ -69,10 +82,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ message: "Signup successful.", user: { name, email } }, { status: 201 });
   } catch (error) {
     console.error("Signup error:", error);
-    const message = error instanceof Error ? error.message : String(error);
-    return NextResponse.json(
-      { error: "Failed to create account.", details: message },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "Failed to create account." }, { status: 500 });
   }
 }

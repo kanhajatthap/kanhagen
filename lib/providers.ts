@@ -1,5 +1,5 @@
 import sharp from "sharp";
-import { buildImageUrl, PollinationsError, fetchPollinationsImage } from "./pollinations";
+import { buildImageUrl, PollinationsError, fetchPollinationsImage, POLLINATIONS_IMAGE_BASE } from "./pollinations";
 
 export interface GenerateImageOptions {
   prompt: string;
@@ -513,6 +513,58 @@ const providers: ImageProvider[] = [
 
 export function getConfiguredProviders(): string[] {
   return providers.filter((p) => p.isConfigured()).map((p) => p.name);
+}
+
+export interface VariationRequest {
+  prompt: string;
+  width: number;
+  height: number;
+  model: string;
+  style?: string;
+  count: number;
+}
+
+export interface Variation {
+  id: string;
+  url: string;
+  seed: number;
+  prompt: string;
+}
+
+/** Hard cap on how many variations one request may ask for. */
+export const MAX_VARIATIONS = 6;
+
+/**
+ * Builds the variation URLs for a prompt. Pure — no DB, no auth, no quota — so
+ * both the /api/variations route and the in-app chat turn can call it directly
+ * instead of one of them making an HTTP request to the other.
+ */
+export function buildVariations(req: VariationRequest): Variation[] {
+  const count = Math.min(Math.max(Math.trunc(req.count) || 1, 1), MAX_VARIATIONS);
+  const variationPrompt = req.style
+    ? `${req.prompt}, ${req.style} style, variation`
+    : `${req.prompt}, similar style and composition, variation`;
+
+  const encodedPrompt = encodeURIComponent(variationPrompt);
+  const baseSeed = Date.now();
+
+  return Array.from({ length: count }, (_, i) => {
+    const seed = baseSeed + i * 1000 + Math.floor(Math.random() * 100);
+    const queryParams = new URLSearchParams();
+    queryParams.set("width", String(req.width));
+    queryParams.set("height", String(req.height));
+    queryParams.set("seed", String(seed));
+    queryParams.set("model", req.model);
+    queryParams.set("nologo", "true");
+    queryParams.set("private", "true");
+
+    return {
+      id: `var-${baseSeed}-${i}`,
+      url: `${POLLINATIONS_IMAGE_BASE}/prompt/${encodedPrompt}?${queryParams.toString()}`,
+      seed,
+      prompt: variationPrompt,
+    };
+  });
 }
 
 export async function generateImageWithFallback(opts: GenerateImageOptions): Promise<GeneratedImage> {

@@ -6,6 +6,7 @@ import { FormEvent, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { toast } from "sonner";
 import { Mail, Lock, User, BrainCircuit, UserPlus, Loader2, Layers, Sparkles, Images, ShieldCheck, ShieldAlert } from "lucide-react";
+import TurnstileWidget from "../../components/TurnstileWidget";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -15,6 +16,8 @@ export default function SignupPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState("");
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -30,12 +33,13 @@ export default function SignupPage() {
       const res = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({ name, email, password, captchaToken }),
       });
 
       if (!res.ok) {
         const json = await res.json().catch(() => null);
         setError(json?.details || json?.error || "Signup failed.");
+        setCaptchaResetKey((k) => k + 1);
         return;
       }
 
@@ -232,6 +236,13 @@ export default function SignupPage() {
                 />
               </div>
             </div>
+
+            <TurnstileWidget
+              action="signup"
+              resetKey={captchaResetKey}
+              onVerify={setCaptchaToken}
+              className="flex justify-center pt-1"
+            />
 
             {error && (
               <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-600 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-400">

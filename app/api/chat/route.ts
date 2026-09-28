@@ -2,11 +2,15 @@ import { NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getDb } from "../../../lib/mongodb";
 import { checkRateLimit } from "../../../lib/rateLimit";
+import { buildVariations, type Variation } from "../../../lib/providers";
+import { QuotaExceededError, refundQuota, spendQuota } from "../../../lib/quota";
+import { quotaErrorResponse } from "../../../lib/httpError";
 import {
   getSessionUser,
   isImageGenerationRequest,
   parseChatRequest,
   resolveConversationId,
+  UploadError,
 } from "../../../lib/chat/common";
 import { handleTextTurn } from "../../../lib/chat/text";
 import { handleImageTurn } from "../../../lib/chat/image";
@@ -14,7 +18,6 @@ import { handleVisionTurn } from "../../../lib/chat/vision";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxBodyLength = 15 * 1024 * 1024; // 15MB for image uploads
 
 /**
  * Multiplexing entry point for the in-app chat.
@@ -32,8 +35,11 @@ export async function POST(req: Request) {
   try {
     parsed = await parseChatRequest(req);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ success: false, error: "Invalid request.", details: msg }, { status: 400 });
+    if (e instanceof UploadError) {
+      return NextResponse.json({ success: false, error: e.message }, { status: e.status });
+    }
+    console.warn("[chat] Rejected malformed request:", e instanceof Error ? e.message : e);
+    return NextResponse.json({ success: false, error: "Invalid request." }, { status: 400 });
   }
 
   if (!parsed.prompt && !parsed.uploadedImage) {
@@ -66,6 +72,32 @@ export async function POST(req: Request) {
         prompt.replace(/\b(similar|variation|variations|like this|similar to this)\b/gi, "").trim() ||
         "similar image";
 
+      const variationCount = 4;
+
+      // Each variation is a generated image, so reserve its credit up front.
+      try {
+        await spendQuota(db, user.userId, "image", variationCount);
+      } catch (quotaErr) {
+        if (quotaErr instanceof QuotaExceededError) return quotaErrorResponse(quotaErr);
+        throw quotaErr;
+      }
+
+      let variations: Variation[];
+      try {
+        variations = buildVariations({
+          prompt: cleanPrompt,
+          width: 1024,
+          height: 1024,
+          model: "flux",
+          count: variationCount,
+        });
+      } catch (e) {
+        // The URLs are built locally, so this should not fail — but if it does,
+        // give the credits back rather than charging for nothing.
+        await refundQuota(db, user.userId, "image", variationCount);
+        throw e;
+      }
+
       const newId = new ObjectId();
       await db.collection("image_history").insertOne({
         _id: newId,
@@ -74,36 +106,17 @@ export async function POST(req: Request) {
         type: "image",
         imageBase64: uploadedImage.buffer.toString("base64"),
         mimeType: uploadedImage.mimeType || "image/png",
+        public: false,
         conversationId: conversationId || newId.toString(),
         createdAt: new Date(),
       });
 
-      const historyId = conversationId || newId.toString();
-      const imageUrl = `/api/history/${newId}/image`;
-
-      const variationsRes = await fetch(new URL("/api/variations", req.url).toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          originalImageUrl: imageUrl,
-          prompt: cleanPrompt,
-          count: 4,
-          userId: user.userId,
-        }),
-      });
-
-      if (!variationsRes.ok) {
-        console.error("[chat] Variations API failed");
-        return NextResponse.json({ success: false, error: "Failed to generate similar images." }, { status: 500 });
-      }
-
-      const variationsJson = await variationsRes.json();
       return NextResponse.json(
         {
           success: true,
           type: "variations",
-          variations: variationsJson.variations || [],
-          historyId,
+          variations,
+          historyId: conversationId || newId.toString(),
           prompt: cleanPrompt,
           message: "Generated similar images",
         },
@@ -118,14 +131,13 @@ export async function POST(req: Request) {
 
     // Image generation.
     if (!parsed.forceText && isImageGenerationRequest(prompt)) {
-      return await handleImageTurn(db, user, prompt, conversationId);
+      return await handleImageTurn(db, user, prompt, conversationId, parsed.isPublic);
     }
 
     // Everything else is a text conversation.
     return await handleTextTurn(db, user, parsed);
   } catch (e) {
     console.error("[chat] Unhandled error:", e);
-    const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ success: false, error: "Server error.", details: msg }, { status: 500 });
+    return NextResponse.json({ success: false, error: "Server error." }, { status: 500 });
   }
 }

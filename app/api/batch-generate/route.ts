@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { ObjectId } from "mongodb";
+import { deriveImageMime } from "../../../lib/imageMime";
 import { getDb } from "../../../lib/mongodb";
 import { SESSION_COOKIE_NAME, verifySessionToken } from "../../../lib/session";
 import { PollinationsError } from "../../../lib/pollinations";
 import { generateImageWithFallback, ProviderError } from "../../../lib/providers";
 import { checkRateLimit } from "../../../lib/rateLimit";
-import { QuotaExceededError, spendQuota } from "../../../lib/quota";
+import { QuotaExceededError, refundQuota, spendQuota } from "../../../lib/quota";
 import { quotaErrorResponse } from "../../../lib/httpError";
 
 export const runtime = "nodejs";
@@ -22,6 +23,8 @@ export async function POST(req: Request) {
   const model = typeof body?.model === "string" ? body.model : "flux";
   const style = typeof body?.style === "string" ? body.style : undefined;
   const historyId = typeof body?.historyId === "string" ? body.historyId.trim() : "";
+  // Private unless the caller explicitly opts in to the public gallery.
+  const isPublic = body?.isPublic === true;
 
   if (!prompt) {
     return NextResponse.json({ error: "Missing prompt." }, { status: 400 });
@@ -68,7 +71,16 @@ export async function POST(req: Request) {
     };
 
     const seeds = Array.from({ length: count }, () => Math.floor(Math.random() * 10000000));
-    const results = await Promise.all(seeds.map((seed) => generateOne(seed)));
+    let results: Array<{ buffer: Buffer; mimeType: string; seed: number }>;
+    try {
+      results = await Promise.all(seeds.map((seed) => generateOne(seed)));
+    } catch (e) {
+      // A failed batch produced no saved images, so refund the whole batch.
+      await refundQuota(db, session.userId, "image", count).catch((rErr) =>
+        console.error("Quota refund failed:", rErr),
+      );
+      throw e;
+    }
 
     const history = db.collection("image_history");
 
@@ -94,19 +106,20 @@ export async function POST(req: Request) {
       userId: session.userId,
       prompt,
       model: `batch-${model}`,
-      mimeType: results[0].mimeType,
+      mimeType: deriveImageMime(results[0].buffer),
       imageBase64,
       seed: results[0].seed,
       width,
       height,
       style,
-      public: true,
+      public: isPublic,
       type: "batch",
       conversationId: conversationId || newId.toString(),
       batchResults: results.map((r) => ({
         seed: r.seed,
         imageBase64: r.buffer.toString("base64"),
-        mimeType: r.mimeType,
+        // Derived from the bytes, not the provider's content-type header.
+        mimeType: deriveImageMime(r.buffer),
       })),
       messages: [
         { role: "user", content: `Batch generate: ${prompt} (${count} images)`, createdAt: new Date() },
@@ -128,13 +141,10 @@ export async function POST(req: Request) {
   } catch (e) {
     console.error("Batch generation error:", e);
     if (e instanceof PollinationsError || e instanceof ProviderError) {
-      return NextResponse.json(
-        { error: e.message, details: e.details || "" },
-        { status: e.status },
-      );
+      return NextResponse.json({ error: e.message }, { status: e.status });
     }
     return NextResponse.json(
-      { error: "Batch generation failed. Please try again in a moment.", details: String(e) },
+      { error: "Batch generation failed. Please try again in a moment." },
       { status: 502 },
     );
   }

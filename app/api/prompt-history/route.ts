@@ -15,14 +15,19 @@ export async function GET(req: Request) {
   }
 
   const { searchParams } = new URL(req.url);
-  const q = searchParams.get("q") || "";
-  const limit = Math.min(parseInt(searchParams.get("limit") || "10", 10), 20);
+  const q = (searchParams.get("q") || "").slice(0, 100);
+  // parseInt returns NaN for junk, and a negative limit reaches Mongo as an
+  // inverted absolute value — both need rejecting before they hit the driver.
+  const rawLimit = Number.parseInt(searchParams.get("limit") || "10", 10);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 20) : 10;
 
   const db = await getDb();
   const collection = db.collection("image_history");
 
   const match: Record<string, unknown> = { userId: session.userId };
   if (q) {
+    // An unindexed $regex is a collection scan, so cap the work per request and
+    // keep the untrusted string from being an unbounded pattern.
     match.prompt = { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
   }
 

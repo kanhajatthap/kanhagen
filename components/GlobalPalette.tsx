@@ -11,8 +11,6 @@ type HistoryItem = {
   createdAt: string;
 };
 
-let cachedHistory: HistoryItem[] | null = null;
-
 type PaletteEntry = {
   id: string;
   group: string;
@@ -35,8 +33,11 @@ export function GlobalPalette() {
   const loadHistory = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/history", { cache: "no-store" });
-      if (!res.ok) return;
+      const res = await fetch("/api/history?limit=5", { cache: "no-store" });
+      if (!res.ok) {
+        setItems([]);
+        return;
+      }
       const json = await res.json();
       const list: HistoryItem[] = Array.isArray(json?.items)
         ? json.items.map((x: { id: string; prompt: string; createdAt: string }) => ({
@@ -46,22 +47,18 @@ export function GlobalPalette() {
           }))
         : [];
       setItems(list);
-      cachedHistory = list;
     } finally {
       setLoading(false);
     }
   }, []);
 
+  // Always refetch on open. A module-level cache outlived the session and
+  // showed the previous user's prompts after a logout/login switch.
   const openPalette = useCallback(() => {
     setOpen(true);
     setQuery("");
     setActive(0);
-    if (cachedHistory) {
-      setItems(cachedHistory);
-      loadHistory();
-    } else {
-      loadHistory();
-    }
+    loadHistory();
   }, [loadHistory]);
 
   const closePalette = useCallback(() => setOpen(false), []);

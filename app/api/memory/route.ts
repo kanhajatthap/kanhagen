@@ -52,6 +52,8 @@ export async function DELETE(req: Request) {
   const body = await req.json().catch(() => null);
   const fact = typeof body?.fact === "string" ? body.fact.trim() : "";
   if (!fact) return NextResponse.json({ error: "Empty fact." }, { status: 400 });
+  // Same bound as POST so DELETE can't push an unbounded string through.
+  if (fact.length > 500) return NextResponse.json({ error: "Fact is too long (max 500 chars)." }, { status: 400 });
 
   const db = await getDb();
   const memory = await removeUserMemoryFact(db, userId, fact);

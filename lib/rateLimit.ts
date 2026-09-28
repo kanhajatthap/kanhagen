@@ -22,7 +22,13 @@ import { LRUCache } from "./lruCache";
 export const WINDOW_MS = 60 * 1000;
 export const MAX_REQUESTS = 20;
 const MAX_USERS = 10_000;
-const USER_BUCKET_TTL_MS = 10 * 60 * 1000;
+/**
+ * Buckets must outlive the longest window a caller can ask for, otherwise the
+ * bucket is TTL-evicted mid-window and the throttle silently resets. Login uses
+ * a 15-minute window, so this has to be comfortably longer than that.
+ */
+const LONGEST_WINDOW_MS = 15 * 60 * 1000;
+const USER_BUCKET_TTL_MS = 2 * LONGEST_WINDOW_MS;
 const COMPACT_THRESHOLD = 4096;
 
 interface RateLimitResult {
@@ -71,15 +77,27 @@ const userBuckets = new LRUCache<string, SlidingWindow>({
 /**
  * Records/checks one request for a user. Exposed with the same signature as the
  * old fixed-window limiter so existing call sites keep working.
+ *
+ * `windowMs` / `maxRequests` are optional overrides so stricter policies (e.g.
+ * login brute-force) can share the same implementation. Every key gets its own
+ * sliding window regardless of the limits used, so buckets never interfere.
+ *
+ * Note this state is per-process: on a multi-instance host (Vercel) the
+ * effective limit is N x the configured one. The daily Mongo quota is the hard
+ * ceiling behind it — see lib/quota.ts.
  */
-export function checkRateLimit(userId: string): RateLimitResult {
+export function checkRateLimit(
+  userId: string,
+  windowMs: number = WINDOW_MS,
+  maxRequests: number = MAX_REQUESTS,
+): RateLimitResult {
   const now = Date.now();
   let bucket = userBuckets.get(userId);
   if (!bucket) {
     bucket = new SlidingWindow();
     userBuckets.set(userId, bucket);
   }
-  return bucket.tryUse(now, WINDOW_MS, MAX_REQUESTS);
+  return bucket.tryUse(now, windowMs, maxRequests);
 }
 
 /** Debug/diagnostic view of the limiter's internal state. */

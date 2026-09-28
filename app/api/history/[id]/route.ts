@@ -22,26 +22,34 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     return NextResponse.json({ error: "Invalid id." }, { status: 400 });
   }
 
-  const db = await getDb();
-  const collection = db.collection("image_history");
+  try {
+    const db = await getDb();
+    const collection = db.collection("image_history");
 
-  const requested = await collection.findOne({ _id: new ObjectId(id), userId });
-  if (!requested) return NextResponse.json({ error: "Not found." }, { status: 404 });
+    // Every query is scoped by `userId`, so another user's id 404s here.
+    const requested = await collection.findOne({ _id: new ObjectId(id), userId });
+    if (!requested) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
-  // Resolve to the canonical conversation id. The requested doc may be a
-  // follow-up turn (child) whose conversationId points to the first message.
-  const conversationId =
-    typeof requested.conversationId === "string" && requested.conversationId
-      ? requested.conversationId
-      : String(requested._id);
+    // Resolve to the canonical conversation id. The requested doc may be a
+    // follow-up turn (child) whose conversationId points to the first message.
+    const conversationId =
+      typeof requested.conversationId === "string" && requested.conversationId
+        ? requested.conversationId
+        : String(requested._id);
 
-  const docs = await collection
-    .find({
-      userId,
-      $or: [{ _id: new ObjectId(conversationId) }, { conversationId }],
-    })
-    .sort({ createdAt: 1, _id: 1 })
-    .toArray();
+    // A legacy/corrupt conversationId would make `new ObjectId()` throw and turn
+    // into an unhandled 500, so fall back to the doc's own id.
+    const rootFilter = ObjectId.isValid(conversationId)
+      ? { _id: new ObjectId(conversationId) }
+      : { _id: new ObjectId(id) };
+
+    const docs = await collection
+      .find({
+        userId,
+        $or: [rootFilter, { conversationId }],
+      })
+      .sort({ createdAt: 1, _id: 1 })
+      .toArray();
 
   const root = docs.find((d) => String(d._id) === conversationId) || docs[0] || requested;
 
@@ -117,4 +125,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     },
     { status: 200 },
   );
+  } catch (e) {
+    console.error("History conversation API error:", e);
+    return NextResponse.json({ error: "Failed to load conversation." }, { status: 500 });
+  }
 }

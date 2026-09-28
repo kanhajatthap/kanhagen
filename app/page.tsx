@@ -411,6 +411,7 @@ export default function Home() {
     }
 
     const { prompt, image, batchCount } = options;
+    const isPublic = options.isPublic === true;
     if (image) {
       console.log("[PAGE] Image details:", image.name, image.size, image.type);
     }
@@ -446,6 +447,7 @@ export default function Home() {
               height: options.height,
               model: options.model,
               historyId: activeHistoryId || undefined,
+              isPublic,
             }),
           });
         } catch {
@@ -523,6 +525,7 @@ try {
             formData.append("prompt", prompt);
             formData.append("history", JSON.stringify(buildHistory(messages)));
             formData.append("historyId", activeHistoryId || "");
+            formData.append("isPublic", String(isPublic));
             formData.append("image", image);
             res = await fetch("/api/chat", {
               method: "POST",
@@ -538,6 +541,7 @@ try {
                 historyId: activeHistoryId || undefined,
                 stream: true,
                 textModel: options.textModel || "auto",
+                isPublic,
               }),
             });
           }

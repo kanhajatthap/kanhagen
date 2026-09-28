@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { motion } from "motion/react";
 import { toast } from "sonner";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { GenerationStages } from "./GenerationStages";
 import { Lightbox, type LightboxItem } from "./Lightbox";
@@ -65,6 +65,11 @@ function MarkdownContent({ text }: { text: string }) {
     <div className="text-sm leading-6">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        // Explicit, not implicit: this is what strips `javascript:` and `data:`
+        // URLs out of AI/markdown output. react-markdown applies it by default
+        // today, so this is a guard against a future default change — and it
+        // stops anyone "fixing" markdown links with urlTransform={u => u}.
+        urlTransform={defaultUrlTransform}
         components={{
           p: ({ children }) => <p className="my-1.5 first:mt-0 last:mb-0">{children}</p>,
           h1: ({ children }) => <h1 className="mb-2 mt-3 text-lg font-semibold first:mt-0">{children}</h1>,

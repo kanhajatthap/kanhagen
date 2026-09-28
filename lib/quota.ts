@@ -166,6 +166,33 @@ export async function spendQuota(db: Db, userId: string, kind: QuotaKind, n = 1)
   return toState(kind, doc, reset);
 }
 
+/**
+ * Gives back `n` credits that were charged by `spendQuota` but never turned
+ * into a result (provider failure, aborted batch, ...). Never lets a bucket go
+ * negative, so a double refund can't hand a user free credits.
+ */
+export async function refundQuota(db: Db, userId: string, kind: QuotaKind, n = 1): Promise<QuotaState> {
+  const col = await ensureQuotaIndexes(db);
+  const reset = getQuotaReset();
+  const field = kind === "image" ? "images" : "text";
+  const amount = Math.max(0, Math.trunc(n));
+
+  if (amount > 0) {
+    await col.updateOne(
+      { userId, day: reset.day },
+      { $inc: { [field]: -amount } },
+    );
+    // Clamp at zero: a refund must never make the counter negative.
+    await col.updateOne(
+      { userId, day: reset.day, [field]: { $lt: 0 } },
+      { $set: { [field]: 0 } },
+    );
+  }
+
+  const doc = await col.findOne<QuotaDoc>({ userId, day: reset.day });
+  return toState(kind, doc, reset);
+}
+
 /** Builds the friendly, time-aware message the APIs send back on exhaustion. */
 export function quotaExceededMessage(kind: QuotaKind, resetLabel: string): string {
   const thing = kind === "image" ? "image credits" : "chat credits";

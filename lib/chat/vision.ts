@@ -2,7 +2,7 @@ import { ObjectId } from "mongodb";
 import type { Db } from "mongodb";
 import { NextResponse } from "next/server";
 import { analyzeImage } from "../vision";
-import { QuotaExceededError, spendQuota } from "../quota";
+import { QuotaExceededError, refundQuota, spendQuota } from "../quota";
 import { quotaErrorResponse } from "../httpError";
 import type { SessionUser } from "./common";
 
@@ -53,10 +53,10 @@ export async function handleVisionTurn(
     }, { status: 200 });
   } catch (error) {
     console.error("Vision API error:", error);
-    const msg = error instanceof Error ? error.message : String(error);
-    return NextResponse.json(
-      { success: false, error: "Failed to analyze image.", details: msg },
-      { status: 500 },
+    // The user got no answer, so give the credit back.
+    await refundQuota(db, user.userId, "text", 1).catch((e) =>
+      console.error("Quota refund failed:", e),
     );
+    return NextResponse.json({ success: false, error: "Failed to analyze image." }, { status: 500 });
   }
 }

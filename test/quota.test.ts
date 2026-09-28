@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ObjectId } from "mongodb";
 import type { Db } from "mongodb";
-import { IMAGE_CREDITS_PER_DAY, TEXT_CREDITS_PER_DAY, quotaDay, getQuotaReset, spendQuota, getQuotaState, getQuotaOverview, quotaExceededMessage, QuotaExceededError } from "../lib/quota";
+import { IMAGE_CREDITS_PER_DAY, TEXT_CREDITS_PER_DAY, quotaDay, getQuotaReset, spendQuota, refundQuota, getQuotaState, getQuotaOverview, quotaExceededMessage, QuotaExceededError } from "../lib/quota";
 import type { QuotaState } from "../lib/quota";
 
 /**
@@ -45,11 +45,30 @@ function makeFakeDb() {
         }
         return opts.returnDocument === "after" ? doc : null;
       },
-      updateOne: async (filter: { userId: string; day: string }, update: { $inc: Record<string, number> }) => {
+      updateOne: async (
+        filter: { userId: string; day: string; [key: string]: unknown },
+        update: { $inc?: Record<string, number>; $set?: Record<string, number> },
+      ) => {
         const doc = quotas.get(`${filter.userId}|${filter.day}`);
         if (!doc) return {};
-        for (const [field, delta] of Object.entries(update.$inc)) {
-          (doc as unknown as Record<string, number>)[field] += delta;
+        // Support the `{ field: { $lt: n } }` guard lib/quota uses when
+        // clamping a refund at zero.
+        for (const [field, cond] of Object.entries(filter)) {
+          if (field === "userId" || field === "day") continue;
+          const test = cond as { $lt: number };
+          if (test && typeof test.$lt === "number") {
+            if (!((doc as unknown as Record<string, number>)[field] < test.$lt)) return {};
+          }
+        }
+        if (update.$inc) {
+          for (const [field, delta] of Object.entries(update.$inc)) {
+            (doc as unknown as Record<string, number>)[field] += delta;
+          }
+        }
+        if (update.$set) {
+          for (const [field, value] of Object.entries(update.$set)) {
+            (doc as unknown as Record<string, number>)[field] = value;
+          }
         }
         return {};
       },
@@ -141,6 +160,64 @@ describe("spendQuota", () => {
     const imageState = await getQuotaState(db, "user-partial", "image");
     expect(imageState.used).toBe(0);
     expect(imageState.remaining).toBe(IMAGE_CREDITS_PER_DAY);
+  });
+});
+
+describe("refundQuota", () => {
+  it("gives back a charged credit after a provider failure", async () => {
+    const { db } = makeFakeDb();
+    await spendQuota(db, "user-r1", "image");
+    expect((await getQuotaState(db, "user-r1", "image")).remaining).toBe(IMAGE_CREDITS_PER_DAY - 1);
+
+    const after = await refundQuota(db, "user-r1", "image");
+    expect(after.used).toBe(0);
+    expect(after.remaining).toBe(IMAGE_CREDITS_PER_DAY);
+  });
+
+  it("refunds a whole batch at once", async () => {
+    const { db } = makeFakeDb();
+    await spendQuota(db, "user-r2", "image", 3);
+    const after = await refundQuota(db, "user-r2", "image", 3);
+    expect(after.used).toBe(0);
+  });
+
+  it("never lets the bucket go negative on a double refund", async () => {
+    const { db } = makeFakeDb();
+    await spendQuota(db, "user-r3", "image");
+    await refundQuota(db, "user-r3", "image");
+    // A second refund for work that was never charged must not mint credits.
+    const after = await refundQuota(db, "user-r3", "image");
+    expect(after.used).toBe(0);
+    expect(after.remaining).toBe(IMAGE_CREDITS_PER_DAY);
+  });
+
+  it("ignores a non-positive amount", async () => {
+    const { db } = makeFakeDb();
+    await spendQuota(db, "user-r4", "image");
+    const after = await refundQuota(db, "user-r4", "image", 0);
+    expect(after.used).toBe(1);
+    const afterNeg = await refundQuota(db, "user-r4", "image", -5);
+    expect(afterNeg.used).toBe(1);
+  });
+
+  it("refunds text without touching the image bucket", async () => {
+    const { db } = makeFakeDb();
+    await spendQuota(db, "user-r5", "text", 2);
+    await refundQuota(db, "user-r5", "text", 2);
+    expect((await getQuotaState(db, "user-r5", "text")).used).toBe(0);
+    expect((await getQuotaState(db, "user-r5", "image")).used).toBe(0);
+  });
+
+  it("frees the user to generate again after a failure", async () => {
+    const { db } = makeFakeDb();
+    for (let i = 0; i < IMAGE_CREDITS_PER_DAY; i++) {
+      await spendQuota(db, "user-r6", "image");
+    }
+    expect((await getQuotaState(db, "user-r6", "image")).remaining).toBe(0);
+    // The last generation failed, so its credit comes back.
+    await refundQuota(db, "user-r6", "image");
+    const retried = await spendQuota(db, "user-r6", "image");
+    expect(retried.remaining).toBe(0);
   });
 });
 

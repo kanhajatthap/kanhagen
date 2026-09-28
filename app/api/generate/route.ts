@@ -2,13 +2,14 @@
 import { cookies } from "next/headers";
 import { ObjectId } from "mongodb";
 import { getDb } from "../../../lib/mongodb";
+import { deriveImageMime } from "../../../lib/imageMime";
 import { SESSION_COOKIE_NAME, verifySessionToken } from "../../../lib/session";
 import { checkRateLimit } from "../../../lib/rateLimit";
 import { getCachedImage, setCachedImage } from "../../../lib/cache";
 import { addWatermark } from "../../../lib/watermark";
 import { buildImageUrl, PollinationsError, fetchPollinationsText, POLLINATIONS_TEXT_BASE } from "../../../lib/pollinations";
 import { generateImageWithFallback, getConfiguredProviders, ProviderError } from "../../../lib/providers";
-import { QuotaExceededError, spendQuota } from "../../../lib/quota";
+import { QuotaExceededError, refundQuota, spendQuota } from "../../../lib/quota";
 import { quotaErrorResponse } from "../../../lib/httpError";
 
 export const runtime = "nodejs";
@@ -57,6 +58,8 @@ export async function POST(req: Request) {
 
   const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
   const historyId = typeof body?.historyId === "string" ? body.historyId.trim() : null;
+  // Images are private unless the caller explicitly opts in to the public gallery.
+  const isPublic = body?.isPublic === true;
 
   const settings: ImageSettings = {
     width: typeof body?.width === "number" ? body.width : undefined,
@@ -100,17 +103,25 @@ export async function POST(req: Request) {
       let imageUrl: string;
       let usedProvider: string;
 
+      // A cache hit costs no provider credits, so only charge when we actually
+      // generate (and refund if every provider fails).
+      let charged = false;
       const dbForQuota = await getDb();
-      try {
-        await spendQuota(dbForQuota, session.userId, "image", 1);
-      } catch (quotaErr) {
-        if (quotaErr instanceof QuotaExceededError) return quotaErrorResponse(quotaErr);
-        throw quotaErr;
+      if (!cached) {
+        try {
+          await spendQuota(dbForQuota, session.userId, "image", 1);
+          charged = true;
+        } catch (quotaErr) {
+          if (quotaErr instanceof QuotaExceededError) return quotaErrorResponse(quotaErr);
+          throw quotaErr;
+        }
       }
 
       if (cached) {
         imageBuffer = Buffer.from(cached.data, "base64") as Buffer;
-        contentType = cached.mimeType;
+        // Re-derive from the cached bytes rather than trusting the cached
+        // content-type, which came from an upstream response header.
+        contentType = deriveImageMime(imageBuffer);
         usedProvider = cached.provider;
         imageUrl =
           cached.provider === "pollinations"
@@ -122,14 +133,24 @@ export async function POST(req: Request) {
               })
             : `data:${cached.mimeType};base64,${cached.data}`;
       } else {
-        const generated = await generateImageWithFallback({
-          prompt: finalPrompt,
-          width: settings.width,
-          height: settings.height,
-          seed: settings.seed,
-          model: settings.model,
-          style: settings.style,
-        });
+        let generated: Awaited<ReturnType<typeof generateImageWithFallback>>;
+        try {
+          generated = await generateImageWithFallback({
+            prompt: finalPrompt,
+            width: settings.width,
+            height: settings.height,
+            seed: settings.seed,
+            model: settings.model,
+            style: settings.style,
+          });
+        } catch (e) {
+          if (charged) {
+            await refundQuota(dbForQuota, session.userId, "image", 1).catch((rErr) =>
+              console.error("Quota refund failed:", rErr),
+            );
+          }
+          throw e;
+        }
 
         const watermarkedBuffer = await addWatermark(generated.buffer);
 
@@ -182,7 +203,7 @@ export async function POST(req: Request) {
           width: settings.width,
           height: settings.height,
           style: settings.style,
-          public: true,
+          public: isPublic,
           messages: [
             { role: "user", content: prompt, createdAt: new Date() },
             { role: "assistant", content: "Image generated", imageBase64: imageBuffer.toString("base64"), createdAt: new Date() },
@@ -218,7 +239,15 @@ export async function POST(req: Request) {
         throw quotaErr;
       }
 
-      const generatedText = await fetchPollinationsText(textUrl);
+      let generatedText: string;
+      try {
+        generatedText = await fetchPollinationsText(textUrl);
+      } catch (e) {
+        await refundQuota(db, session.userId, "text", 1).catch((rErr) =>
+          console.error("Quota refund failed:", rErr),
+        );
+        throw e;
+      }
 
       const history = db.collection("image_history");
       await history.createIndex({ userId: 1, createdAt: -1 });
@@ -268,14 +297,10 @@ export async function POST(req: Request) {
   } catch (e) {
     console.error("Generate API error:", e);
     if (e instanceof PollinationsError || e instanceof ProviderError) {
-      return NextResponse.json(
-        { error: e.message, details: e.details || "" },
-        { status: e.status },
-      );
+      // `message` is already a user-safe string; `details` may carry upstream
+      // hostnames/URLs so it is logged, never returned.
+      return NextResponse.json({ error: e.message }, { status: e.status });
     }
-    return NextResponse.json(
-      { error: "Server error.", details: String(e) },
-      { status: 502 },
-    );
+    return NextResponse.json({ error: "Server error." }, { status: 502 });
   }
 }

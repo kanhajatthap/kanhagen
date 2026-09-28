@@ -6,6 +6,7 @@ import { FormEvent, useState } from "react";
 import { motion } from "motion/react";
 import { toast } from "sonner";
 import { Mail, Lock, LogIn, BrainCircuit, Loader2, Sparkles, ShieldCheck, Zap } from "lucide-react";
+import TurnstileWidget from "../../components/TurnstileWidget";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -13,6 +14,9 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState("");
+  // Bumped after a rejected submit so the widget hands out a fresh token.
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -23,12 +27,13 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, captchaToken }),
       });
 
       if (!res.ok) {
         const json = await res.json().catch(() => null);
         setError(json?.details || json?.error || "Login failed.");
+        setCaptchaResetKey((k) => k + 1);
         return;
       }
 
@@ -124,7 +129,15 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-zinc-700 dark:text-zinc-300">Password</label>
+              <div className="mb-1.5 flex items-center justify-between">
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">Password</label>
+                <Link
+                  href="/forgot-password"
+                  className="text-xs font-medium text-indigo-600 transition-colors hover:text-indigo-500 dark:text-indigo-400"
+                >
+                  Forgot password?
+                </Link>
+              </div>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
                 <input
@@ -137,6 +150,13 @@ export default function LoginPage() {
                 />
               </div>
             </div>
+
+            <TurnstileWidget
+              action="login"
+              resetKey={captchaResetKey}
+              onVerify={setCaptchaToken}
+              className="flex justify-center pt-1"
+            />
 
             {error && (
               <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-600 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-400">

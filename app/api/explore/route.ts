@@ -1,29 +1,59 @@
 import { NextResponse } from "next/server";
 import { getDb } from "../../../lib/mongodb";
+import { checkRateLimit } from "../../../lib/rateLimit";
+import { getClientIp } from "../../../lib/request";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/** createIndex is idempotent but still a round-trip; do it once per process. */
+let indexesReady: Promise<unknown> | null = null;
+
 export async function GET(req: Request) {
+  // Public, unauthenticated, and unindexed-regex capable: cap the request rate
+  // so it can't be used to hammer Mongo.
+  const limitResult = checkRateLimit(`explore:${getClientIp(req)}`, 60_000, 60);
+  if (!limitResult.allowed) {
+    return NextResponse.json(
+      { error: "Too many requests." },
+      { status: 429, headers: { "Retry-After": String(limitResult.retryAfter ?? 60) } },
+    );
+  }
+
   const { searchParams } = new URL(req.url);
   const sort = searchParams.get("sort") || "latest";
-  const limit = Math.min(parseInt(searchParams.get("limit") || "20", 10), 100);
-  const page = Math.max(parseInt(searchParams.get("page") || "1", 10), 1);
-  const q = searchParams.get("q") || "";
+  // parseInt yields NaN for junk and a negative number is silently inverted by
+  // the driver, so clamp explicitly instead of trusting the parameter.
+  const rawLimit = Number.parseInt(searchParams.get("limit") || "20", 10);
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 20;
+  const rawPage = Number.parseInt(searchParams.get("page") || "1", 10);
+  const page = Number.isFinite(rawPage) ? Math.max(rawPage, 1) : 1;
+  const q = (searchParams.get("q") || "").slice(0, 100);
   const skip = (page - 1) * limit;
 
   try {
     const db = await getDb();
-    await db.collection("image_history").createIndex({ createdAt: -1 });
-    await db.collection("image_history").createIndex({ prompt: "text" });
+    const collection = db.collection("image_history");
+    indexesReady ??= collection
+      .createIndex({ createdAt: -1 })
+      .then(() => collection.createIndex({ prompt: "text" }))
+      .catch((e) => {
+        // Don't cache a failure; the next request retries.
+        indexesReady = null;
+        throw e;
+      });
+    await indexesReady;
 
     const query: Record<string, unknown> = {
       mimeType: { $ne: "text/plain" },
       imageBase64: { $exists: true },
-      public: { $ne: false },
+      // Explicit opt-in only. `$ne: false` would also match legacy rows that
+      // predate the flag and leak private images into the public gallery.
+      public: true,
     };
 
     if (q) {
+      // Unindexed $regex = collection scan per request; `q` is length-capped above.
       query.prompt = { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
     }
 

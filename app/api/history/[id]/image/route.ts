@@ -2,6 +2,7 @@ import { ObjectId } from "mongodb";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getDb } from "../../../../../lib/mongodb";
+import { safeResponseImageMime } from "../../../../../lib/imageMime";
 import { SESSION_COOKIE_NAME, verifySessionToken } from "../../../../../lib/session";
 
 export const runtime = "nodejs";
@@ -27,11 +28,15 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     { projection: { imageBase64: 1, mimeType: 1, userId: 1, public: 1, type: 1, batchResults: 1 } },
   );
 
-  // Images are viewable when they belong to the viewer, are explicitly public,
-  // or are legacy records (created before the public flag existed). Private
-  // images (public === false) are only viewable by their owner.
-  const viewable = Boolean(userId && row?.userId === userId) || row?.public !== false;
-  if (!row || !viewable) return NextResponse.json({ error: "Not found." }, { status: 404 });
+  if (!row) return NextResponse.json({ error: "Not found." }, { status: 404 });
+
+  // Owner always sees their own images. Everyone else only sees images that
+  // were explicitly published. `row.public === true` (not `!== false`) so rows
+  // written before the flag existed stay private instead of leaking to /api/explore.
+  const isOwner = Boolean(userId && row.userId === userId);
+  const viewable = isOwner || row.public === true;
+  if (!viewable) return NextResponse.json({ error: "Not found." }, { status: 404 });
+
 
   // ?n=N serves the Nth image of a batch generation.
   const indexParam = new URL(req.url).searchParams.get("n");
@@ -50,10 +55,18 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
 
   if (bytes.length === 0) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
+  // The stored mimeType is attacker-influenceable: POST /api/history takes it
+  // from the request body, and providers can return an arbitrary content-type
+  // header. Re-check it against a strict allowlist here so a row written as
+  // `text/html` (or `image/svg+xml`, which also runs script) can only ever be
+  // served as a real image type. `nosniff` stops the browser from sniffing its
+  // way back to the dangerous type.
   return new Response(bytes, {
     status: 200,
     headers: {
-      "Content-Type": mimeType,
+      "Content-Type": safeResponseImageMime(mimeType),
+      "X-Content-Type-Options": "nosniff",
+      "Content-Disposition": "inline",
       "Cache-Control": "no-store",
     },
   });

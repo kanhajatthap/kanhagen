@@ -10,7 +10,7 @@ import {
 import { markPromptSeen } from "../bloomFilter";
 import { generateTextStream, generateTextWithFallback, TextProviderError } from "../text";
 import { PollinationsError } from "../pollinations";
-import { QuotaExceededError, spendQuota } from "../quota";
+import { QuotaExceededError, refundQuota, spendQuota } from "../quota";
 import { quotaErrorResponse } from "../httpError";
 import { resolveConversationId, type HistoryMessage, type ParsedChatRequest, type SessionUser } from "./common";
 import { TEXT_SYSTEM_PROMPT } from "../text";
@@ -72,6 +72,9 @@ export async function handleTextTurn(
         let historyIdOut = conversationId || "";
         let provider = "";
         let model = "";
+        // Tracks whether this turn actually produced an answer, so a failure
+        // refunds the credit charged up front.
+        let refunded = false;
         try {
           for await (const ev of generateTextStream(prompt, discussionHistory, textModel, memorySystemPrompt)) {
             if (ev.kind === "delta") {
@@ -99,16 +102,18 @@ export async function handleTextTurn(
           controller.enqueue(encoder.encode(sse("done", { historyId: historyIdOut, provider, model, duplicate: duplicatePrompt })));
         } catch (error) {
           console.error("Text streaming error:", error);
+          // `details` is logged, never streamed — it can carry upstream URLs.
           const mapped =
             error instanceof PollinationsError || error instanceof TextProviderError
-              ? { error: error.message, details: error.details || "", status: error.status }
+              ? { error: error.message, status: error.status }
               : {
                   error: "Failed to generate the response. Please try again.",
-                  details: error instanceof Error ? error.message : String(error),
                   status: 502,
                 };
           controller.enqueue(encoder.encode(sse("error", mapped)));
+          refunded = true;
         } finally {
+          if (refunded) await refundQuota(db, user.userId, "text", 1).catch(() => {});
           controller.close();
         }
       },
@@ -128,14 +133,15 @@ export async function handleTextTurn(
     generatedText = await generateTextWithFallback(prompt, discussionHistory, textModel, memorySystemPrompt);
   } catch (error) {
     console.error("Text generation error:", error);
+    // No answer was produced, so refund the credit.
+    await refundQuota(db, user.userId, "text", 1).catch((e) =>
+      console.error("Quota refund failed:", e),
+    );
     if (error instanceof PollinationsError || error instanceof TextProviderError) {
-      return NextResponse.json(
-        { error: error.message, details: error.details || "" },
-        { status: error.status },
-      );
+      return NextResponse.json({ error: error.message }, { status: error.status });
     }
     return NextResponse.json(
-      { error: "Failed to fetch text response. Please try again.", details: error instanceof Error ? error.message : String(error) },
+      { error: "Failed to fetch text response. Please try again." },
       { status: 502 },
     );
   }

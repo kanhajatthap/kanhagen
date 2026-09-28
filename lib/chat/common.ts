@@ -2,9 +2,81 @@ import { ObjectId } from "mongodb";
 import type { Db } from "mongodb";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE_NAME, verifySessionToken } from "../session";
+import { ALLOWED_IMAGE_MIME, sniffImageMime } from "../imageMime";
 
 export const MAX_HISTORY_MESSAGES = 30;
 export const MAX_HISTORY_MESSAGE_CHARS = 2000;
+
+/**
+ * Upload limits enforced server-side. `maxBodyLength` / `experimental.proxyClientMaxBodySize`
+ * are not applied to route handlers, so the only real bound is here: check the
+ * declared Content-Length before buffering, then verify the actual bytes.
+ */
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+export const MAX_PROMPT_CHARS = 2000;
+
+export { ALLOWED_IMAGE_MIME };
+
+
+/** Thrown when an upload is missing, the wrong type, or over the size cap. */
+export class UploadError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number = 400,
+  ) {
+    super(message);
+    this.name = "UploadError";
+  }
+}
+
+/**
+ * Rejects oversized bodies before they are buffered. A missing/lying
+ * Content-Length is not fatal here — `readUploadedImage` re-checks the real
+ * byte count after reading, which is the authoritative check.
+ */
+export function assertBodySizeWithinLimit(req: Request, maxBytes = MAX_UPLOAD_BYTES): void {
+  const declared = req.headers.get("content-length");
+  if (!declared) return;
+  const bytes = Number(declared);
+  if (!Number.isFinite(bytes) || bytes < 0) return;
+  if (bytes > maxBytes) {
+    throw new UploadError(`Upload too large. Maximum size is ${Math.floor(maxBytes / (1024 * 1024))}MB.`, 413);
+  }
+}
+
+/** Validates a multipart image part and returns its bytes as a Buffer. */
+export async function readUploadedImage(
+  file: File | null,
+  maxBytes = MAX_UPLOAD_BYTES,
+): Promise<{ buffer: Buffer; mimeType: string }> {
+  if (!file) throw new UploadError("Missing image.");
+
+  if (file.type && !ALLOWED_IMAGE_MIME.has(file.type)) {
+    throw new UploadError("Please upload a JPG, PNG, or WEBP image.");
+  }
+  if (file.size > maxBytes) {
+    throw new UploadError(`Upload too large. Maximum size is ${Math.floor(maxBytes / (1024 * 1024))}MB.`, 413);
+  }
+
+  const buffer = Buffer.from(await file.arrayBuffer());
+
+  // Authoritative check: the declared size can lie, the decoded bytes cannot.
+  if (buffer.length === 0) throw new UploadError("Uploaded image is empty.");
+  if (buffer.length > maxBytes) {
+    throw new UploadError(`Upload too large. Maximum size is ${Math.floor(maxBytes / (1024 * 1024))}MB.`, 413);
+  }
+
+  // The declared Content-Type is fully client-controlled, so require the bytes
+  // to actually be one of the allowed image formats. Without this, a script
+  // renamed to .png sails through the allowlist above and gets forwarded to the
+  // remote vision provider as if it were a real image.
+  const sniffed = sniffImageMime(buffer);
+  if (!sniffed) {
+    throw new UploadError("That file is not a valid JPG, PNG, or WEBP image.");
+  }
+  return { buffer, mimeType: sniffed };
+}
+
 
 export type HistoryMessage = { role: "user" | "assistant"; content: string };
 
@@ -36,6 +108,8 @@ export interface ParsedChatRequest {
   streamRequested: boolean;
   forceText: boolean;
   textModel: "auto" | "gemini" | "pollinations";
+  /** Opt-in: images are private unless the client explicitly asks otherwise. */
+  isPublic: boolean;
   uploadedImage?: { buffer: Buffer; mimeType: string };
 }
 
@@ -48,12 +122,16 @@ export async function parseChatRequest(req: Request): Promise<ParsedChatRequest>
     streamRequested: false,
     forceText: false,
     textModel: "auto",
+    isPublic: false,
   };
   const contentType = req.headers.get("content-type") || "";
 
+  // Reject oversized bodies before anything is buffered into memory.
+  assertBodySizeWithinLimit(req);
+
   if (contentType.includes("multipart/form-data")) {
     const formData = await req.formData();
-    parsed.prompt = (formData.get("prompt") as string) || "";
+    parsed.prompt = ((formData.get("prompt") as string) || "").trim().slice(0, MAX_PROMPT_CHARS);
     parsed.historyId = (formData.get("historyId") as string) || "";
     const rawHistory = formData.get("history");
     try {
@@ -63,19 +141,17 @@ export async function parseChatRequest(req: Request): Promise<ParsedChatRequest>
     }
     const imageFile = formData.get("image") as File | null;
     if (imageFile) {
-      const bytes = await imageFile.arrayBuffer();
-      parsed.uploadedImage = {
-        buffer: Buffer.from(bytes),
-        mimeType: imageFile.type || "image/png",
-      };
+      parsed.uploadedImage = await readUploadedImage(imageFile);
     }
+    parsed.isPublic = formData.get("isPublic") === "true";
   } else {
     const body = await req.json().catch(() => null);
-    parsed.prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
+    parsed.prompt = typeof body?.prompt === "string" ? body.prompt.trim().slice(0, MAX_PROMPT_CHARS) : "";
     parsed.historyId = typeof body?.historyId === "string" ? body.historyId.trim() : "";
     parsed.discussionHistory = sanitizeHistory(body?.history);
     parsed.streamRequested = body?.stream === true;
     parsed.forceText = body?.forceText === true;
+    parsed.isPublic = body?.isPublic === true;
     const rawTextModel = body?.textModel;
     parsed.textModel =
       rawTextModel === "gemini" || rawTextModel === "pollinations" ? rawTextModel : "auto";
