@@ -13,6 +13,7 @@ import {
   Cpu,
   Database,
   DatabaseZap,
+  EyeOff,
   FileText,
   FolderTree,
   Gauge,
@@ -25,6 +26,7 @@ import {
   Layers,
   LayoutGrid,
   Lock,
+  Mail,
   MessageSquare,
   Moon,
   Palette,
@@ -37,6 +39,7 @@ import {
   Sparkles,
   Terminal,
   Timer,
+  TriangleAlert,
   Users,
   Wand2,
   Waypoints,
@@ -60,10 +63,10 @@ const NAV = [
 const STATS = [
   { icon: Rocket, label: "Next.js", value: "16.2.2" },
   { icon: Braces, label: "React", value: "19.2.4" },
-  { icon: Server, label: "API Routes", value: "14" },
-  { icon: Boxes, label: "Components", value: "17" },
-  { icon: Database, label: "Database", value: "MongoDB" },
-  { icon: Cpu, label: "AI Engine", value: "Gemini + Poll." },
+  { icon: Server, label: "Endpoints", value: "26" },
+  { icon: Boxes, label: "Components", value: "19" },
+  { icon: Database, label: "Collections", value: "4" },
+  { icon: Cpu, label: "AI Engine", value: "5 providers" },
 ];
 
 const STACK = [
@@ -114,12 +117,24 @@ const STACK = [
     ],
   },
   {
+    icon: ShieldCheck,
+    title: "Auth & Abuse Protection",
+    accent: "from-cyan-500 to-blue-600",
+    items: [
+      { name: "Cloudflare Turnstile", detail: "Widget on login · signup · forgot-password" },
+      { name: "lib/turnstile.ts", detail: "Server-side siteverify, action-bound, fail-closed in prod" },
+      { name: "lib/captchaMessage.ts", detail: "Maps siteverify error codes to actionable copy" },
+      { name: "lib/passwordReset.ts", detail: "Single-use SHA-256 reset tokens, 1-hour TTL" },
+      { name: "Brevo → Resend", detail: "Reset email transport chain + dev preview" },
+    ],
+  },
+  {
     icon: Cpu,
     title: "AI & Media",
     accent: "from-sky-500 to-cyan-600",
     items: [
       { name: "Gemini API", detail: "text streaming · image gen · vision (understands uploaded images)" },
-      { name: "Pollinations AI", detail: "image + text fallback endpoints" },
+      { name: "Pollinations AI", detail: "image + text fallback endpoints · 30s budget" },
       { name: "OCR.space", detail: "Text-extraction fallback when Gemini vision is unavailable" },
       { name: "sharp", detail: "Image processing + SVG watermark overlay" },
     ],
@@ -141,7 +156,7 @@ const STACK = [
     items: [
       { name: "LRU image cache", detail: "Recency eviction, 30-min TTL, max 200 entries" },
       { name: "Sliding-window rate limiter", detail: "20 requests / minute per user, LRU-evicted buckets" },
-      { name: "Provider circuit breaker", detail: "Skip dead providers, explicit 'Tried: …' errors" },
+      { name: "Provider circuit breaker", detail: "Pollinations: 2 failures → 10-min cooldown" },
       { name: "Blur-up placeholders", detail: "Lazy image loading + shimmer" },
       { name: "Daily free credits", detail: "5 images + 30 chat asks / day, MongoDB-backed, reset 5:30 AM IST" },
     ],
@@ -216,7 +231,7 @@ const DATABASE = [
     note: "One document per generation / conversation",
     indexes: "Indexes: { userId: 1, createdAt: -1 } · { createdAt: -1 } · { prompt: 'text' }",
     fields: [
-      { field: "userId", type: "objectId", desc: "Owner reference" },
+      { field: "userId", type: "string", desc: "Owner reference (hex ObjectId string)" },
       { field: "prompt / title", type: "string", desc: "Prompt + optional custom title" },
       { field: "type", type: "string", desc: "image · text · vision · batch" },
       { field: "model / mimeType", type: "string", desc: "e.g. flux, pollinations-text" },
@@ -225,7 +240,7 @@ const DATABASE = [
       { field: "seed / width / height / style", type: "mixed", desc: "Generation settings" },
       { field: "batchResults", type: "array", desc: "Batch variants with seeds" },
       { field: "messages", type: "array", desc: "Conversation thread" },
-      { field: "public / pinned", type: "bool", desc: "Visibility + pin flag" },
+      { field: "public / pinned", type: "bool", desc: "Opt-in visibility + pin flag" },
       { field: "createdAt / updatedAt", type: "date", desc: "Timestamps" },
     ],
   },
@@ -238,20 +253,35 @@ const DATABASE = [
       { field: "userId / day", type: "string", desc: "Owner + period key (e.g. 2026-09-25)" },
       { field: "images", type: "number", desc: "Images used today (5/day cap)" },
       { field: "text", type: "number", desc: "Chat credits used today (30/day cap)" },
-      { field: "createdAt / updatedAt", type: "date", desc: "Timestamps" },
+    ],
+  },
+  {
+    name: "password_resets",
+    icon: KeyRound,
+    note: "One-shot reset tokens — only the hash is stored",
+    indexes: "Indexes: { tokenHash: 1 } unique · { expiresAt: 1 } TTL 0s · { userId: 1, usedAt: 1 }",
+    fields: [
+      { field: "userId", type: "string", desc: "Owner reference" },
+      { field: "tokenHash", type: "string", desc: "SHA-256 hex of the 32-byte token" },
+      { field: "expiresAt", type: "date", desc: "1-hour TTL, Mongo expires the doc" },
+      { field: "usedAt", type: "date|null", desc: "Set on consume; null = still claimable" },
+      { field: "requestIp", type: "string", desc: "Issuing IP for audit" },
     ],
   },
 ];
 
 const API = [
-  { method: "POST", path: "/api/auth/signup", desc: "Create account, auto-login", auth: false },
-  { method: "POST", path: "/api/auth/login", desc: "Login with email + password", auth: false },
+  { method: "POST", path: "/api/auth/signup", desc: "Create account, auto-login · captcha · per-IP throttle", auth: false },
+  { method: "POST", path: "/api/auth/login", desc: "Login with email + password · captcha · per-IP + per-account throttle", auth: false },
   { method: "POST", path: "/api/auth/logout", desc: "Clear session cookie", auth: false },
   { method: "GET", path: "/api/auth/me", desc: "Return current user from JWT", auth: false },
+  { method: "POST", path: "/api/auth/forgot-password", desc: "Request a reset link · captcha · always a generic response", auth: false },
+  { method: "POST", path: "/api/auth/reset-password", desc: "Consume a single-use token and set the new password", auth: false },
   { method: "POST", path: "/api/chat", desc: "Main chat: image / text / vision / similar", auth: true },
+  { method: "GET", path: "/api/generate", desc: "Health check + list of configured providers", auth: false },
   { method: "POST", path: "/api/generate", desc: "Generate with settings + watermark + cache", auth: true },
   { method: "POST", path: "/api/batch-generate", desc: "Generate 1–8 images in parallel", auth: true },
-  { method: "POST", path: "/api/variations", desc: "N variations with distinct seeds", auth: true },
+  { method: "POST", path: "/api/variations", desc: "N variations with distinct seeds (max 6)", auth: true },
   { method: "GET", path: "/api/quota", desc: "Daily credits remaining + next reset time", auth: true },
   { method: "POST", path: "/api/text", desc: "Dedicated chat/text endpoint (SSE or JSON)", auth: true },
   { method: "POST", path: "/api/vision", desc: "Understand an uploaded image (Gemini vision / OCR)", auth: true },
@@ -259,21 +289,21 @@ const API = [
   { method: "GET", path: "/api/history", desc: "List user history (pinned first)", auth: true },
   { method: "POST", path: "/api/history", desc: "Manually save an image", auth: true },
   { method: "PATCH", path: "/api/history", desc: "Rename or pin an item", auth: true },
-  { method: "DELETE", path: "/api/history", desc: "Delete an item", auth: true },
-  { method: "GET", path: "/api/history/:id", desc: "Single history detail", auth: true },
-  { method: "GET", path: "/api/history/:id/image", desc: "Raw image bytes (owner or public)", auth: false },
-  { method: "GET", path: "/api/prompt-history", desc: "Recent unique prompts (autocomplete)", auth: true },
+  { method: "DELETE", path: "/api/history", desc: "Delete an item or a whole conversation", auth: true },
+  { method: "GET", path: "/api/history/:id", desc: "Single conversation detail", auth: true },
+  { method: "GET", path: "/api/history/:id/image", desc: "Raw image bytes (owner or public) · nosniff", auth: false },
+  { method: "GET", path: "/api/prompt-history", desc: "Recent unique prompts (autocomplete)", auth: false },
   { method: "GET", path: "/api/memory", desc: "List cross-chat assistant memory facts", auth: true },
   { method: "POST", path: "/api/memory", desc: "Add a memory fact", auth: true },
   { method: "DELETE", path: "/api/memory", desc: "Remove a memory fact", auth: true },
-  { method: "GET", path: "/api/test", desc: "Health check: { test: 'API working' }", auth: false },
+  { method: "GET", path: "/api/test", desc: "Health check — returns 404 in production", auth: false },
 ];
 
 const SECURITY = [
   {
     icon: KeyRound,
     title: "Password hashing",
-    detail: "bcryptjs with 10 salt rounds. Passwords are never stored in plain text.",
+    detail: "bcryptjs with 10 salt rounds. Passwords are never stored in plain text, and inputs respect bcrypt's 72-byte limit.",
   },
   {
     icon: Lock,
@@ -282,23 +312,48 @@ const SECURITY = [
   },
   {
     icon: ShieldCheck,
+    title: "Cloudflare Turnstile",
+    detail: "Server-side siteverify on login, signup and forgot-password. The action is hard-bound, so a token minted for signup cannot be replayed on login.",
+  },
+  {
+    icon: TriangleAlert,
+    title: "Fail-closed captcha",
+    detail: "If the secret is missing in production every request is denied — a broken integration can never silently allow traffic. Rejections return a machine-readable code, not a mystery 403.",
+  },
+  {
+    icon: Mail,
+    title: "Single-use reset tokens",
+    detail: "32 CSPRNG bytes, SHA-256 hashed at rest, 1-hour TTL, consumed by one atomic findOneAndUpdate. Issuing a new token burns every previous one.",
+  },
+  {
+    icon: EyeOff,
+    title: "Anti-enumeration",
+    detail: "Forgot-password returns an identical response whether or not the address exists, sleeps 120 ms on the miss path to flatten timing, and login verifies a dummy hash when no user exists.",
+  },
+  {
+    icon: Users,
     title: "Ownership enforcement",
     detail: "Every history read/rename/delete filters by userId — you only ever touch your own data.",
   },
   {
     icon: Image,
-    title: "Smart image visibility",
-    detail: "public !== false images are viewable; explicitly private ones are owner-only. Legacy rows stay public.",
+    title: "Private-by-default images",
+    detail: "Images are private unless explicitly published. The gallery and raw image route only serve rows marked public: true; everything else is owner-only.",
   },
   {
     icon: Timer,
     title: "Rate limiting",
-    detail: "Sliding-window limiter: 20 requests per minute per user with retry-after seconds; idle user buckets are evicted via LRU.",
+    detail: "Sliding window: 20 req/min per user, plus tighter per-IP and per-account limits on the auth routes, with Retry-After on every 429.",
   },
   {
     icon: FileText,
     title: "Server-side validation",
-    detail: "Prompt presence, type coercion, mime checks, ObjectId validation on every mutation.",
+    detail: "Prompt presence, a 2,000-char cap, magic-byte MIME sniffing, a 10 MB upload cap, and ObjectId validation on every mutation.",
+  },
+  {
+    icon: Globe,
+    title: "Security headers",
+    detail: "Full CSP (script/frame/worker sources pinned), X-Frame-Options DENY, nosniff, Referrer-Policy, and a locked-down Permissions-Policy.",
   },
 ];
 
@@ -355,6 +410,17 @@ const FEATURES = [
     items: ["Pin · rename · delete", "Pinned items float to top", "Open & resume any chat"],
   },
   {
+    icon: KeyRound,
+    title: "Accounts & password reset",
+    items: [
+      "Email + password signup & login",
+      "Forgot-password over email (Brevo → Resend)",
+      "Single-use reset link, valid 1 hour",
+      "Cloudflare Turnstile on every auth form",
+      "Identical response whether or not the email exists",
+    ],
+  },
+  {
     icon: Globe,
     title: "Explore gallery",
     items: ["Public images from all users", "Search + latest/popular/random", "Trending prompt chips"],
@@ -379,12 +445,25 @@ const ENV = [
   { name: "MONGODB_URI", required: true, detail: "MongoDB Atlas connection string" },
   { name: "MONGODB_DB", required: false, detail: "Database name (default: ai_image_generator)" },
   { name: "SESSION_SECRET", required: true, detail: "Secret used to sign JWTs" },
-  { name: "GEMINI_API_KEY", required: true, detail: "Key for Gemini text streaming + image generation" },
+  { name: "GEMINI_API_KEY", required: true, detail: "Key for Gemini text streaming, vision and image generation" },
   { name: "GEMINI_TEXT_MODEL", required: false, detail: "Text model id (default: gemini-3.1-flash-lite)" },
   { name: "GEMINI_VISION_MODEL", required: false, detail: "Vision model id (default: gemini-3.1-flash-lite)" },
+  { name: "GEMINI_IMAGE_MODEL", required: false, detail: "Image model id (default: gemini-3.1-flash-image)" },
+  { name: "OCR_SPACE_API_KEY", required: false, detail: "Key for the OCR fallback when Gemini vision is unavailable" },
+  { name: "HF_TOKEN / HUGGINGFACE_API_KEY", required: false, detail: "Hugging Face image generation (optional provider)" },
+  { name: "TOGETHER_API_KEY", required: false, detail: "Together AI image generation (optional provider)" },
+  { name: "HORDE_API_KEY", required: false, detail: "AI Horde key — anonymous access by default" },
   { name: "FREE_IMAGE_CREDITS", required: false, detail: "Daily image limit (default: 5)" },
   { name: "FREE_TEXT_CREDITS", required: false, detail: "Daily chat limit (default: 30)" },
-  { name: "OCR_SPACE_API_KEY", required: false, detail: "Key for the OCR fallback when Gemini vision is unavailable" },
+  { name: "NEXT_PUBLIC_TURNSTILE_SITE_KEY", required: true, detail: "Turnstile browser site key — inlined at build time, so a redeploy is required" },
+  { name: "TURNSTILE_SECRET_KEY", required: true, detail: "Turnstile server secret — without it production fails closed" },
+  { name: "TURNSTILE_EXPECTED_HOSTNAME", required: false, detail: "Advisory hostname check; warns but never rejects" },
+  { name: "BREVO_API_KEY", required: false, detail: "Brevo API key (preferred email transport)" },
+  { name: "BREVO_FROM_EMAIL", required: false, detail: "Brevo sender address" },
+  { name: "BREVO_FROM_NAME", required: false, detail: "Brevo sender name (default: KanhaGen)" },
+  { name: "RESEND_API_KEY", required: false, detail: "Resend API key (fallback email transport)" },
+  { name: "MAIL_FROM", required: false, detail: "Resend sender (default: KanhaGen <no-reply@example.com>)" },
+  { name: "APP_URL", required: false, detail: "Canonical base URL used to build password-reset links" },
 ];
 
 const COMMANDS = [
@@ -404,10 +483,12 @@ const COMPONENT_TREE = [
   { level: 2, name: "Sidebar.tsx", detail: "History list, pin/rename/delete, navigation" },
   { level: 1, name: "app/explore", detail: "Public gallery · trending · search · sort" },
   { level: 1, name: "app/history", detail: "Personal library · lightbox · regenerate actions" },
-  { level: 1, name: "app/settings · login · signup", detail: "Preference, auth pages with password strength" },
-  { level: 1, name: "components/ui", detail: "Lightbox · BlurImage · GenerationStages · GlobalPalette · ThemeProvider" },
-  { level: 0, name: "lib/", detail: "chat · text · vision · memory · quota · httpError · pollinations · providers · session · mongodb · rateLimit · lruCache · bloomFilter · cache · watermark · utils" },
-  { level: 0, name: "app/api/", detail: "18 route handlers across auth, chat, credit, gallery, history" },
+  { level: 1, name: "app/settings · login · signup", detail: "Preference and auth pages with password strength" },
+  { level: 1, name: "app/forgot-password · reset-password", detail: "Reset request + token consumption, both captcha / throttle aware" },
+  { level: 1, name: "app/about", detail: "This page — public, no login required" },
+  { level: 1, name: "components/ui", detail: "Lightbox · BlurImage · GenerationStages · GlobalPalette · ThemeProvider · TurnstileWidget" },
+  { level: 0, name: "lib/", detail: "chat · text · vision · memory · quota · httpError · pollinations · providers · session · mongodb · rateLimit · lruCache · bloomFilter · cache · watermark · turnstile · passwordReset · mailer · imageMime · request · captchaMessage · utils" },
+  { level: 0, name: "app/api/", detail: "20 route handlers across auth, chat, generation, gallery and history" },
 ];
 
 const METHOD_COLOR: Record<string, string> = {
@@ -559,6 +640,7 @@ export default function AboutPage() {
                   <li>· Personality memory: tell it your name once, every chat remembers it</li>
                   <li>· Upload an image to run OCR — the extracted text comes back as an answer</li>
                   <li>· Batch-generate 1–8 images, create variations, and download results</li>
+                  <li>· Sign up, sign in, or reset a forgotten password by email — every auth form is captcha-protected</li>
                 </ul>
               </Card>
               <Card>
@@ -569,8 +651,8 @@ export default function AboutPage() {
                 <ul className="mt-3 space-y-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
                   <li>· User accounts in a dedicated <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-[12px] dark:bg-zinc-800">users</code> collection</li>
                   <li>· Every generation saved to <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-[12px] dark:bg-zinc-800">image_history</code> (images, text, vision, batch)</li>
-                  <li>· Images stored as base64, public by default so the gallery can show them</li>
-                  <li>· Private images stay owner-only via a visibility check on every read</li>
+                  <li>· Daily credit buckets in <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-[12px] dark:bg-zinc-800">quotas</code>, one document per user per UTC day</li>
+                  <li>· Images are <strong>private by default</strong> — only what you explicitly publish reaches the gallery</li>
                 </ul>
               </Card>
             </div>
@@ -689,7 +771,9 @@ export default function AboutPage() {
                 </h3>
                 <ul className="mt-2 space-y-1 text-[13px] leading-relaxed text-zinc-600 dark:text-zinc-300">
                   <li><code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">lib/text</code> — Gemini + Pollinations streaming, error detection</li>
-                  <li><code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">lib/pollinations</code> — fetch, 45s timeout, 1 retry, friendly errors</li>
+                  <li><code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">lib/pollinations</code> — fetch, 30s timeout, 1 retry, friendly errors</li>
+                  <li><code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">lib/turnstile</code> — server-side captcha verification, fail-closed</li>
+                  <li><code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">lib/passwordReset · mailer</code> — reset tokens + email delivery</li>
                   <li><code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">lib/session</code> — JWT create/verify</li>
                   <li><code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">lib/mongodb</code> — cached global connection</li>
                   <li><code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">lib/rateLimit · lruCache · bloomFilter</code> — the data-structure backbone</li>
@@ -702,7 +786,7 @@ export default function AboutPage() {
             id="data-model"
             index="05"
             title="Data Model"
-            subtitle="Two MongoDB collections power the entire app"
+            subtitle="Four MongoDB collections power the entire app"
           >
             <div className="grid gap-4 lg:grid-cols-2">
               {DATABASE.map((col) => (
@@ -738,7 +822,7 @@ export default function AboutPage() {
             </div>
           </Section>
 
-          <Section id="api-endpoints" index="06" title="API Endpoints" subtitle="14 Route Handlers — each one documented">
+          <Section id="api-endpoints" index="06" title="API Endpoints" subtitle="26 endpoints across 20 Route Handlers — each one documented">
             <div className="overflow-hidden rounded-2xl border border-zinc-200 dark:border-zinc-800">
               <div className="max-h-[560px] overflow-y-auto">
                 <table className="w-full border-collapse text-left text-sm">
@@ -770,8 +854,9 @@ export default function AboutPage() {
               </div>
             </div>
             <p className="mt-3 text-xs text-zinc-400 dark:text-zinc-500">
-              <span className="font-medium text-indigo-500">14 route files</span> — including auth flows, generation, gallery and an
-              OCR health route for raw image bytes.
+              <span className="font-medium text-indigo-500">20 route files · 26 endpoints</span> — including the full auth
+              flow (signup, login, forgot-password, reset-password), generation, gallery and a health route for raw image
+              bytes.
             </p>
           </Section>
 
