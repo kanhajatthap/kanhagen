@@ -1,12 +1,12 @@
-"use client";
+﻿"use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Cloudflare Turnstile widget.
  *
  * Uses the official explicit-render API rather than a wrapper library so no new
- * dependency is pulled in. The widget is only the client-side gesture — the
+ * dependency is pulled in. The widget is only the client-side gesture â€” the
  * token it hands back must still be verified server-side with
  * `verifyCaptcha`, which is the part that actually protects the route.
  *
@@ -93,6 +93,8 @@ export interface TurnstileWidgetProps {
   action?: string;
   theme?: "light" | "dark" | "auto";
   className?: string;
+  /** Rendered in place of the widget when it can't load. Defaults to a short notice. */
+  fallback?: string;
 }
 
 export default function TurnstileWidget({
@@ -101,9 +103,11 @@ export default function TurnstileWidget({
   action,
   theme = "auto",
   className,
+  fallback = "Verification is unavailable right now. Please refresh the page.",
 }: TurnstileWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetIdRef = useRef<string | null>(null);
+  const [failed, setFailed] = useState(false);
 
   // The widget is rendered once but the parent's callback identity changes on
   // every render, so route the latest one through a ref instead of re-rendering
@@ -116,6 +120,19 @@ export default function TurnstileWidget({
 
   const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
 
+  // Removes the widget from Cloudflare's registry and clears the handle. Safe to
+  // call repeatedly, and after the container has already left the DOM.
+  const teardown = () => {
+    const id = widgetIdRef.current;
+    if (!id || typeof window === "undefined" || !window.turnstile) return;
+    try {
+      window.turnstile.remove(id);
+    } catch {
+      // The iframe may already be gone; nothing to clean up.
+    }
+    widgetIdRef.current = null;
+  };
+
   useEffect(() => {
     if (!siteKey || !containerRef.current) return;
 
@@ -125,44 +142,74 @@ export default function TurnstileWidget({
     loadTurnstile()
       .then((api) => {
         if (cancelled || !container.isConnected) return;
+        setFailed(false);
         widgetIdRef.current = api.render(container, {
           sitekey: siteKey,
           action,
           theme,
           callback: (token: string) => onVerifyRef.current(token),
           "expired-callback": () => onVerifyRef.current(""),
-          "error-callback": () => onVerifyRef.current(""),
-          "timeout-callback": () => onVerifyRef.current(""),
+          // The challenge itself failed (bad site key, hostname not registered,
+          // blocked script). Tear the widget down *before* switching to the
+          // fallback, otherwise its container disappears while Cloudflare still
+          // holds a handle on it and a later reset() throws.
+          "error-callback": () => {
+            teardown();
+            setFailed(true);
+            onVerifyRef.current("");
+          },
+          "timeout-callback": () => {
+            teardown();
+            setFailed(true);
+            onVerifyRef.current("");
+          },
         });
       })
       .catch((error) => {
         // Leave the token empty; the server will reject the request, which is the
         // correct fail-closed outcome rather than a form that silently bypasses.
         console.error("[Turnstile]", error);
+        setFailed(true);
         onVerifyRef.current("");
       });
 
     return () => {
       cancelled = true;
-      if (widgetIdRef.current && window.turnstile) {
-        try {
-          window.turnstile.remove(widgetIdRef.current);
-        } catch {
-          // The iframe may already be gone; nothing to clean up.
-        }
-        widgetIdRef.current = null;
-      }
+      teardown();
     };
   }, [siteKey, action, theme]);
 
   // A spent token can't be reused, so clear it whenever the parent asks.
   useEffect(() => {
     if (resetKey === undefined || !widgetIdRef.current || !window.turnstile) return;
-    window.turnstile.reset(widgetIdRef.current);
+    // Reset only while the widget is still mounted. After a failed challenge the
+    // container is replaced by the fallback, and resetting an orphaned widget
+    // makes Cloudflare throw "Nothing to reset found for provided container" â€”
+    // an uncaught error that tears down the whole page.
+    if (!containerRef.current?.isConnected) return;
+    try {
+      window.turnstile.reset(widgetIdRef.current);
+    } catch (error) {
+      console.warn("[Turnstile] reset failed:", error);
+    }
     onVerifyRef.current("");
   }, [resetKey]);
 
-  if (!siteKey) return null;
+  if (!siteKey) {
+    return (
+      <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-400">
+        Verification is not configured. Add <code>NEXT_PUBLIC_TURNSTILE_SITE_KEY</code> and redeploy.
+      </p>
+    );
+  }
+
+  if (failed) {
+    return (
+      <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-400">
+        {fallback}
+      </p>
+    );
+  }
 
   return <div ref={containerRef} className={className} />;
 }

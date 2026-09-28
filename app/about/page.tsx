@@ -499,7 +499,7 @@ export default function AboutPage() {
               </div>
               <h1 className="text-4xl font-bold leading-[1.1] tracking-tight sm:text-5xl">
                 <span className="bg-gradient-to-r from-indigo-500 via-purple-500 to-fuchsia-500 bg-clip-text text-transparent">
-                  AI Studio
+                  KanhaGen
                 </span>
                 {" "}— inside the project
               </h1>

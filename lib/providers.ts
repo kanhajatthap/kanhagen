@@ -335,7 +335,7 @@ async function localGenerate(opts: GenerateImageOptions): Promise<GeneratedImage
   const height = opts.height || 1024;
   const minDim = Math.min(width, height);
 
-  const raw = (opts.prompt || "AI Studio Logo").trim();
+  const raw = (opts.prompt || "KanhaGen Logo").trim();
   const safe = escapeXml(raw);
 
   const maxChars = Math.max(8, Math.floor(width / 26));

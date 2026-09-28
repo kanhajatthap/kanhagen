@@ -5,6 +5,7 @@ import { FormEvent, useState } from "react";
 import { motion } from "motion/react";
 import { Mail, ArrowLeft, Loader2, Send, BrainCircuit, ShieldCheck, CheckCircle2 } from "lucide-react";
 import TurnstileWidget from "../../components/TurnstileWidget";
+import { captchaMessage } from "../../lib/captchaMessage";
 
 const inputClass =
   "w-full rounded-xl border border-zinc-300 bg-white py-2.5 pl-10 pr-4 text-sm outline-none transition-colors focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-indigo-500";
@@ -42,7 +43,7 @@ export default function ForgotPasswordPage() {
         setCaptchaResetKey((k) => k + 1);
       }
       if (!res.ok) {
-        setError(json?.error || "Something went wrong. Please try again.");
+        setError(captchaMessage(json?.code) || json?.error || "Something went wrong. Please try again.");
         return;
       }
 
@@ -69,7 +70,7 @@ export default function ForgotPasswordPage() {
           <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/15 backdrop-blur-sm">
             <BrainCircuit className="h-6 w-6 text-white" />
           </div>
-          <span className="font-heading text-lg font-semibold tracking-tight">AI Studio</span>
+          <span className="font-heading text-lg font-semibold tracking-tight">KanhaGen</span>
         </Link>
 
         <div className="relative">

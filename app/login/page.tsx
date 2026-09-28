@@ -7,6 +7,7 @@ import { motion } from "motion/react";
 import { toast } from "sonner";
 import { Mail, Lock, LogIn, BrainCircuit, Loader2, Sparkles, ShieldCheck, Zap } from "lucide-react";
 import TurnstileWidget from "../../components/TurnstileWidget";
+import { captchaMessage } from "../../lib/captchaMessage";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -32,7 +33,7 @@ export default function LoginPage() {
 
       if (!res.ok) {
         const json = await res.json().catch(() => null);
-        setError(json?.details || json?.error || "Login failed.");
+        setError(captchaMessage(json?.code) || json?.details || json?.error || "Login failed.");
         setCaptchaResetKey((k) => k + 1);
         return;
       }
@@ -59,7 +60,7 @@ export default function LoginPage() {
           <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/15 backdrop-blur-sm">
             <BrainCircuit className="h-6 w-6 text-white" />
           </div>
-          <span className="font-heading text-lg font-semibold tracking-tight">AI Studio</span>
+          <span className="font-heading text-lg font-semibold tracking-tight">KanhaGen</span>
         </Link>
 
         <div className="relative">

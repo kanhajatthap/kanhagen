@@ -33,7 +33,7 @@ export async function POST(req: Request) {
   const captcha = await verifyCaptcha(body?.[CAPTCHA_FIELD], { remoteIp: ip, expectedAction: "signup" });
   if (!captcha.ok) {
     console.warn(`[signup] captcha rejected (${captcha.reason}) from ${ip}`);
-    return NextResponse.json({ error: "Verification failed. Please try again." }, { status: 403 });
+    return NextResponse.json({ error: "Verification failed. Please try again.", code: captcha.reason }, { status: 403 });
   }
 
   try {

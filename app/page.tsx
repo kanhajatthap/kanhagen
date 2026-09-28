@@ -785,7 +785,7 @@ const useSuggestion = (prompt: string) => {
               </div>
               <div>
                 <span className="font-heading text-base font-semibold text-zinc-800 dark:text-zinc-100">
-                  AI Studio
+                  KanhaGen
                 </span>
                 <span className="hidden text-xs text-zinc-500 dark:text-zinc-400 sm:block">
                   Images, text &amp; vision — all in one place

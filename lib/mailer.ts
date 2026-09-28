@@ -42,7 +42,7 @@ function resetEmailHtml(resetUrl: string): string {
     <div style="max-width:520px;margin:0 auto;background:#fff;border-radius:16px;padding:32px;">
       <h1 style="margin:0 0 16px;font-size:20px;">Reset your password</h1>
       <p style="margin:0 0 20px;font-size:14px;line-height:1.6;color:#52525b;">
-        We received a request to reset the password for your AI Studio account.
+        We received a request to reset the password for your KanhaGen account.
         Click the button below to choose a new one. This link expires in 1 hour
         and can only be used once.
       </p>
@@ -70,7 +70,7 @@ function resetEmailText(resetUrl: string): string {
   return [
     "Reset your password",
     "",
-    "We received a request to reset the password for your AI Studio account.",
+    "We received a request to reset the password for your KanhaGen account.",
     "Open the link below to choose a new one. It expires in 1 hour and can only be used once.",
     "",
     resetUrl,
@@ -82,7 +82,7 @@ function resetEmailText(resetUrl: string): string {
 async function sendViaBrevo(to: string, resetUrl: string): Promise<MailResult> {
   const apiKey = process.env.BREVO_API_KEY!;
   const fromEmail = process.env.BREVO_FROM_EMAIL!;
-  const fromName = process.env.BREVO_FROM_NAME || "AI Studio";
+  const fromName = process.env.BREVO_FROM_NAME || "KanhaGen";
 
   try {
     const res = await fetch("https://api.brevo.com/v3/smtp/email", {
@@ -95,7 +95,7 @@ async function sendViaBrevo(to: string, resetUrl: string): Promise<MailResult> {
       body: JSON.stringify({
         sender: { name: fromName, email: fromEmail },
         to: [{ email: to }],
-        subject: "Reset your AI Studio password",
+        subject: "Reset your KanhaGen password",
         htmlContent: resetEmailHtml(resetUrl),
         textContent: resetEmailText(resetUrl),
         // The link is the whole point of the email; a spam filter must not
@@ -118,7 +118,7 @@ async function sendViaBrevo(to: string, resetUrl: string): Promise<MailResult> {
 
 async function sendViaResend(to: string, resetUrl: string): Promise<MailResult> {
   const apiKey = process.env.RESEND_API_KEY!;
-  const from = process.env.MAIL_FROM || "AI Studio <no-reply@example.com>";
+  const from = process.env.MAIL_FROM || "KanhaGen <no-reply@example.com>";
   try {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -129,7 +129,7 @@ async function sendViaResend(to: string, resetUrl: string): Promise<MailResult> 
       body: JSON.stringify({
         from,
         to: [to],
-        subject: "Reset your AI Studio password",
+        subject: "Reset your KanhaGen password",
         html: resetEmailHtml(resetUrl),
       }),
     });

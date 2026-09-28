@@ -1,6 +1,6 @@
 import sharp from "sharp";
 
-const WATERMARK_TEXT = "AI Studio";
+const WATERMARK_TEXT = "KanhaGen";
 const WATERMARK_OPACITY = 0.3;
 
 export async function addWatermark(imageBuffer: Buffer): Promise<Buffer> {

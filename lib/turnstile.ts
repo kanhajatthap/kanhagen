@@ -30,7 +30,21 @@ export const CAPTCHA_FIELD = "captchaToken";
 export type CaptchaOutcome =
   | { ok: true; skipped: true }
   | { ok: true; skipped?: undefined; hostname: string }
-  | { ok: false; reason: string };
+  | { ok: false; reason: CaptchaReason };
+
+/**
+ * Machine-readable rejection reasons. These go back to the client as a `code`
+ * so a misconfiguration is diagnosable instead of showing up as one anonymous
+ * "verification failed" for every cause. Nothing here describes the request
+ * beyond the caller's own attempt, and no account or address data is involved.
+ */
+export type CaptchaReason =
+  | "not_configured"
+  | "missing_token"
+  | "action_mismatch"
+  | "request_failed"
+  | `http_${number}`
+  | string;
 
 interface SiteverifyResponse {
   success: boolean;
@@ -97,10 +111,17 @@ export async function verifyCaptcha(
     return { ok: false, reason: (body["error-codes"] ?? ["verification_failed"]).join(",") };
   }
 
+  // Advisory only, deliberately not a hard reject. Cloudflare already binds a
+  // token to the site it was issued for, so a token minted on another site
+  // cannot verify against this sitekey — the check below adds no real security
+  // and only produces false negatives on `www.`, preview deployments and other
+  // legitimate alternate hostnames.
   const expectedHost = process.env.TURNSTILE_EXPECTED_HOSTNAME;
   if (expectedHost && body.hostname !== expectedHost) {
-    console.warn(`[captcha] token hostname mismatch: got ${body.hostname ?? "none"}`);
-    return { ok: false, reason: "hostname_mismatch" };
+    console.warn(
+      `[captcha] token hostname "${body.hostname ?? "none"}" differs from TURNSTILE_EXPECTED_HOSTNAME "${expectedHost}" ` +
+        "(not fatal - Cloudflare already enforces site binding)",
+    );
   }
 
   if (options.expectedAction && body.action !== options.expectedAction) {

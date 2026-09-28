@@ -47,7 +47,10 @@ export async function POST(req: Request) {
   const captcha = await verifyCaptcha(body?.[CAPTCHA_FIELD], { remoteIp: ip, expectedAction: "forgot_password" });
   if (!captcha.ok) {
     console.warn(`[forgot-password] captcha rejected (${captcha.reason}) from ${ip}`);
-    return NextResponse.json({ error: "Verification failed. Please try again." }, { status: 403 });
+    return NextResponse.json(
+      { error: "Verification failed. Please try again.", code: captcha.reason },
+      { status: 403 },
+    );
   }
 
   // Per-IP stops one host spraying many addresses; per-email stops one address

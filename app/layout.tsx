@@ -21,7 +21,7 @@ const spaceGrotesk = Space_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "AI Studio | Portfolio Project",
+  title: "KanhaGen | Portfolio Project",
   description: "Generate images, chat with AI, and analyze photos with Next.js.",
 };
 

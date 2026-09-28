@@ -33,6 +33,9 @@ const securityHeaders = [
       "frame-src 'self' https://challenges.cloudflare.com",
       "style-src 'self' 'unsafe-inline'",
       "font-src 'self' data:",
+      // Turnstile can spin up a worker from a blob URL; without this the
+      // challenge silently stalls instead of failing loudly.
+      "worker-src 'self' blob:",
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",
